@@ -392,4 +392,307 @@ async function fetchWithRetry(url, options, retries = 3, timeout = 10000) {
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(id);
       if (!response.ok) {
-        throw new Error(`HTTP
+        throw new Error(`HTTP error: ${response.status}`);
+      }
+      return response;
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+    }
+  }
+}
+
+async function sendChatRequest(prompt, taskType, language) {
+  const cacheKey = `chat:${prompt}:${taskType}`;
+  if (apiCache[cacheKey]) {
+    return apiCache[cacheKey];
+  }
+
+  try {
+    const textHistory = conversationHistory.filter(msg => !msg.isImage && !msg.isAudio).slice(-20);
+    const systemPrompt = {
+      role: 'system',
+      content: getSystemPrompt(taskType) + ` Respond in ${language === 'en' ? 'English' : 'Russian'}.`
+    };
+    const messages = [systemPrompt, ...textHistory.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.text
+    })), { role: 'user', content: prompt }];
+
+    const response = await fetchWithRetry('https://text.pollinations.ai/openai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'advanced-llm', messages, max_tokens: 4096 })
+    });
+
+    const data = await response.json();
+    let assistantMessage = data.choices[0].message.content;
+    assistantMessage = assistantMessage.replace(POLLINATIONS_FOOTER, '').trim();
+    apiCache[cacheKey] = assistantMessage;
+    saveCache();
+    return assistantMessage;
+  } catch (error) {
+    console.error('Ошибка чата:', error);
+    return 'Ошибка ответа от сервера: ' + error.message;
+  }
+}
+
+async function compressImage(blob, maxWidth = 800, quality = 0.8) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = URL.createObjectURL(blob);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const scale = Math.min(maxWidth / img.width, 1);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(resolve, 'image/jpeg', quality);
+    };
+  });
+}
+
+async function addWatermark(imageUrl, applyWatermark) {
+  if (!applyWatermark) {
+    return imageUrl;
+  }
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.src = imageUrl;
+
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+
+      const text = 'tg: @pepegin';
+      const fontSize = Math.min(img.width / 20, 32);
+      ctx.font = `${fontSize}px Roboto Mono`;
+      ctx.textBaseline = 'bottom';
+      const textMetrics = ctx.measureText(text);
+      const x = img.width - textMetrics.width - 8;
+      const y = img.height - 8;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillText(text, x + 1, y + 1);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.fillText(text, x, y);
+
+      canvas.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        resolve(url);
+      }, 'image/png');
+    };
+
+    img.onerror = () => reject(new Error('Не удалось загрузить изображение для водяного знака'));
+  });
+}
+
+async function generateImage(params) {
+  const cacheKey = `image:${params.prompt}:${params.style}:${params.resolution}`;
+  if (apiCache[cacheKey]) {
+    return apiCache[cacheKey];
+  }
+
+  try {
+    const applyWatermark = !params.prompt.toLowerCase().includes('pepegin');
+    const cleanPrompt = params.prompt.replace(/\bpepegin\b/gi, '').trim();
+    const styleMap = {
+      'реалистичное': 'photorealistic',
+      'cartoon': 'cartoon',
+      'аниме': 'anime',
+      'абстрактное': 'abstract'
+    };
+    const apiStyle = styleMap[params.style.toLowerCase()] || 'default';
+
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?nologo=true&style=${apiStyle}&width=${params.resolution.split('x')[0]}&height=${params.resolution.split('x')[1]}${params.negative ? `&negative=${encodeURIComponent(params.negative)}` : ''}`;
+    const response = await fetchWithRetry(url, { method: 'GET' });
+
+    const blob = await response.blob();
+    const originalUrl = URL.createObjectURL(blob);
+
+    const compressedBlob = await compressImage(blob);
+    const watermarkedUrl = await addWatermark(URL.createObjectURL(compressedBlob), applyWatermark);
+    
+    apiCache[cacheKey] = watermarkedUrl;
+    saveCache();
+    return watermarkedUrl;
+  } catch (error) {
+    console.error('Ошибка генерации изображения:', error);
+    throw new Error('Не удалось сгенерировать изображение: ' + error.message);
+  }
+}
+
+async function generateAudio(params) {
+  const cacheKey = `audio:${params.text}:${params.voice}:${params.volume}`;
+  if (apiCache[cacheKey]) {
+    return apiCache[cacheKey];
+  }
+
+  try {
+    const validVoices = ['nova', 'alloy', 'echo'];
+    const selectedVoice = validVoices.includes(params.voice.toLowerCase()) ? params.voice.toLowerCase() : 'nova';
+    const url = `https://text.pollinations.ai/${encodeURIComponent(params.text)}?model=openai-audio&voice=${selectedVoice}`;
+    const response = await fetchWithRetry(url, { method: 'GET' });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get('Content-Type');
+    if (!contentType || !contentType.includes('audio/')) {
+      throw new Error('Получен не аудио контент');
+    }
+
+    const audioUrl = URL.createObjectURL(blob);
+    apiCache[cacheKey] = audioUrl;
+    saveCache();
+    return audioUrl;
+  } catch (error) {
+    console.error('Ошибка генерации аудио:', error);
+    throw new Error('Не удалось сгенерировать аудио: ' + error.message);
+  }
+}
+
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+
+  addMessage(message, 'user');
+  const { tasks, language } = parsePrompt(message);
+
+  for (const task of tasks) {
+    const loadingEl = addMessage(`<i class="fas fa-spinner fa-spin"></i> Обрабатываю ${task.type}...`, 'bot', false, false);
+
+    try {
+      if (task.type === 'image') {
+        const imageUrl = await generateImage(task.params);
+        chatEl.removeChild(loadingEl);
+        addMessage(imageUrl, 'bot', true, true, false, true);
+      } else if (task.type === 'audio') {
+        const audioUrl = await generateAudio(task.params);
+        chatEl.removeChild(loadingEl);
+        addMessage(audioUrl, 'bot', false, true, true);
+      } else {
+        const result = await sendChatRequest(task.params.query || task.params.task, task.type, language);
+        chatEl.removeChild(loadingEl);
+        addMessage(result, 'bot');
+      }
+    } catch (error) {
+      chatEl.removeChild(loadingEl);
+      addMessage(error.message, 'bot');
+    }
+  }
+};
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('.copy-btn')) {
+    const btn = event.target.closest('.copy-btn');
+    const textToCopy = btn.dataset.text;
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      btn.innerHTML = '<i class="fas fa-check"></i>';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.innerHTML = '<i class="fas fa-copy"></i>';
+        btn.classList.remove('copied');
+      }, 1500);
+    });
+  }
+});
+
+document.querySelector('.sidebar button[aria-label="Переключить тему"]').addEventListener('click', () => {
+  document.body.classList.toggle('light-theme');
+  localStorage.setItem('theme', document.body.classList.contains('light-theme') ? 'light' : 'dark');
+});
+
+document.querySelector('.sidebar button[aria-label="Очистить чат"]').addEventListener('click', () => {
+  conversationHistory = [];
+  localStorage.removeItem(STORAGE_KEY);
+  chatEl.innerHTML = '';
+  const welcomeText = `
+<h2>Привет! Я Pepegin GPT 🙌</h2>
+<p>Я продвинутая нейросеть с мощной обработкой промптов:</p>
+<ul>
+<li>Отвечаю на сложные вопросы с анализом.</li>
+<li>Генерирую фото с параметрами (напиши "сгенерируй фото кота реалистичное 512x512").</li>
+<li>Создаю аудио с разными голосами (напиши "гс тест голосом alloy").</li>
+<li>Обрабатываю файлы (изображения, аудио, PDF).</li>
+<li>Пишу код и выполняю многоэтапные задачи (напиши "напиши рассказ, затем сгенерируй его иллюстрацию").</li>
+</ul>
+<p>Меня создал <a href="https://t.me/Pepegin_xd" target="_blank" rel="noopener noreferrer">tg: @Pepegin_xd</a>.</p>
+`;
+  const welcomeEl = addMessage(welcomeText, 'bot', false, true);
+  welcomeEl.classList.add('welcome-message');
+});
+
+document.querySelector('.sidebar button[aria-label="Открыть справку"]').addEventListener('click', () => {
+  addMessage(`
+Справка:
+- Текст: задавайте любые вопросы, включая аналитические ("анализируй данные").
+- Фото: "сгенерируй фото <описание> [реалистичное|cartoon|аниме|абстрактное] [ширинаxвысота] [без <негатив>]".
+- Аудио: "гс <текст> [голосом alloy|echo|nova] [громко|тихо]".
+- Код: "напиши код на <язык> для <задача>".
+- Творчество: "напиши рассказ/стих <тема>".
+- Многоэтапные задачи: используйте "затем" (напр., "напиши рассказ, затем сгенерируй фото").
+- Загружайте файлы (изображения, аудио, PDF).
+`, 'bot');
+});
+
+menuToggle.addEventListener('click', () => {
+  sidebar.classList.toggle('active');
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.sidebar') && !event.target.closest('.menu-toggle') && sidebar.classList.contains('active')) {
+    sidebar.classList.remove('active');
+  }
+});
+
+if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const recognition = new SpeechRecognition();
+  recognition.lang = 'ru-RU';
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.onresult = (event) => {
+    const transcript = Array.from(event.results)
+      .map(result => result[0].transcript)
+      .join('');
+    input.value = transcript;
+    if (event.results[0].isFinal) {
+      micButton.classList.remove('recording');
+    }
+  };
+  recognition.onerror = (event) => {
+    console.error('Ошибка распознавания речи:', event.error);
+    addMessage('Ошибка распознавания речи: ' + event.error, 'bot');
+    micButton.classList.remove('recording');
+  };
+  recognition.onend = () => micButton.classList.remove('recording');
+  micButton.addEventListener('click', () => {
+    try {
+      recognition.start();
+      micButton.classList.add('recording');
+    } catch (error) {
+      addMessage('Не удалось запустить распознавание речи.', 'bot');
+    }
+  });
+} else {
+  micButton.disabled = true;
+  micButton.title = 'Ваш браузер не поддерживает распознавание речи';
+}
+
+window.onload = () => {
+  loadChat();
+  if (localStorage.getItem('theme') === 'light') {
+    document.body.classList.add('light-theme');
+  }
+};
