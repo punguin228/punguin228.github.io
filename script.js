@@ -7,11 +7,23 @@ function detectDevice() {
   return isMobile ? 'mobile' : 'desktop';
 }
 
-// Вызов функции при загрузке и изменении размера окна
-window.addEventListener('load', detectDevice);
-window.addEventListener('resize', detectDevice);
+// Debounce для оптимизации события resize
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
 
-const POLLINATIONS_FOOTER = /Powered by Pollinations\.AI.*?$$ https:\/\/pollinations\.ai\/redirect\/kofi $$.*?\./i;
+window.addEventListener('load', detectDevice);
+window.addEventListener('resize', debounce(detectDevice, 200));
+
+const POLLINATIONS_FOOTER = /Powered by Pollinations\.AI.*?\(https:\/\/pollinations\.ai\/redirect\/kofi\).*?\./i;
 
 function formatMessage(text, role) {
   if (text.startsWith("### ")) {
@@ -23,7 +35,7 @@ function formatMessage(text, role) {
   });
   if (role === 'bot') {
     text = text.replace(/([^]+)\s*([^)]+)/g,
-      '<a href="$2" style="color: #00e571;" target="_blank" rel="noopener noreferrer">$1</a>');
+      '<a href="$2" style="color: #1E88E5;" target="_blank" rel="noopener noreferrer">$1</a>');
   }
   return text;
 }
@@ -76,7 +88,7 @@ async function getMediaFromDB(id) {
 
 const userAvatar = `<svg width="36" height="36" viewBox="0 0 36 36">
   <circle cx="18" cy="18" r="18" fill="#FFFFFF"/>
-  <text x="50%" y="50%" fill="#12171D" font-size="18" text-anchor="middle" dy=".3em">Я</text>
+  <text x="50%" y="50%" fill="#212121" font-size="18" text-anchor="middle" dy=".3em">Я</text>
 </svg>`;
 const botAvatar = `<img src="ava.png" alt="Pepegin GPT Avatar" width="36" height="36" style="border-radius: 50%;" onerror="this.src='https://via.placeholder.com/36'">`;
 
@@ -95,7 +107,7 @@ async function loadChat() {
       conversationHistory = JSON.parse(saved);
       chatEl.innerHTML = '';
       const fragment = document.createDocumentFragment();
-      for (const msg of conversationHistory.slice(-50)) {
+      for (const msg of conversationHistory.slice(-20)) {
         if (msg.isImage || msg.isAudio) {
           const blob = await getMediaFromDB(msg.mediaId);
           if (blob) {
@@ -397,7 +409,7 @@ async function sendChatRequest(prompt, taskType, language) {
   }
 
   try {
-    const textHistory = conversationHistory.filter(msg => !msg.isImage && !msg.isAudio).slice(-50);
+    const textHistory = conversationHistory.filter(msg => !msg.isImage && !msg.isAudio).slice(-20);
     const systemPrompt = {
       role: 'system',
       content: getSystemPrompt(taskType) + ` Respond in ${language === 'en' ? 'English' : 'Russian'}.`
