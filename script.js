@@ -1,4 +1,17 @@
-const POLLINATIONS_FOOTER = /Powered by Pollinations\.AI.*?\(https:\/\/pollinations\.ai\/redirect\/kofi\).*?\./i;
+// Определение устройства
+function detectDevice() {
+  const ua = navigator.userAgent.toLowerCase();
+  const isMobile = /mobile|android|iphone|ipad|tablet/i.test(ua) || window.innerWidth <= 900;
+  document.body.classList.remove('mobile', 'desktop');
+  document.body.classList.add(isMobile ? 'mobile' : 'desktop');
+  return isMobile ? 'mobile' : 'desktop';
+}
+
+// Вызов функции при загрузке и изменении размера окна
+window.addEventListener('load', detectDevice);
+window.addEventListener('resize', detectDevice);
+
+const POLLINATIONS_FOOTER = /Powered by Pollinations\.AI.*?$$ https:\/\/pollinations\.ai\/redirect\/kofi $$.*?\./i;
 
 function formatMessage(text, role) {
   if (text.startsWith("### ")) {
@@ -10,7 +23,7 @@ function formatMessage(text, role) {
   });
   if (role === 'bot') {
     text = text.replace(/([^]+)\s*([^)]+)/g,
-      '<a href="$2" style="color: #A0A8B3;" target="_blank" rel="noopener noreferrer">$1</a>');
+      '<a href="$2" style="color: #00e571;" target="_blank" rel="noopener noreferrer">$1</a>');
   }
   return text;
 }
@@ -21,8 +34,8 @@ const input = document.getElementById('messageInput');
 const micButton = document.getElementById('micButton');
 const emojiButton = document.getElementById('emojiButton');
 const fileButton = document.getElementById('fileButton');
-const emojiPicker = document.getElementById('emojiPicker');
-const filePreview = document.getElementById('filePreview');
+const menuToggle = document.querySelector('.menu-toggle');
+const sidebar = document.querySelector('.sidebar');
 const STORAGE_KEY = 'pepegin_chat_history';
 const CACHE_KEY = 'pepegin_api_cache';
 let conversationHistory = [];
@@ -65,7 +78,7 @@ const userAvatar = `<svg width="36" height="36" viewBox="0 0 36 36">
   <circle cx="18" cy="18" r="18" fill="#FFFFFF"/>
   <text x="50%" y="50%" fill="#12171D" font-size="18" text-anchor="middle" dy=".3em">Я</text>
 </svg>`;
-const botAvatar = `<img src="ava.png" alt="Pepegin GPT Avatar" width="36" height="36" style="border-radius: 50%;">`;
+const botAvatar = `<img src="ava.png" alt="Pepegin GPT Avatar" width="36" height="36" style="border-radius: 50%;" onerror="this.src='https://via.placeholder.com/36'">`;
 
 function saveChat() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(conversationHistory));
@@ -96,6 +109,7 @@ async function loadChat() {
         }
       }
       chatEl.appendChild(fragment);
+      chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
       lazyLoadMedia();
     } else {
       const welcomeText = `
@@ -215,7 +229,6 @@ function parsePrompt(prompt) {
     }
   }
 
-  // Detect language (basic heuristic)
   const isEnglish = /[a-zA-Z]/.test(prompt) && !/[а-яА-Я]/.test(prompt);
   const language = isEnglish ? 'en' : 'ru';
 
@@ -340,7 +353,7 @@ function addMessage(content, role, isImage = false, persist = true, isAudio = fa
   container.appendChild(avatarDiv);
   container.appendChild(contentDiv);
   chatEl.appendChild(container);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
 
   if (persist) {
     if (isImage || isAudio) {
@@ -496,7 +509,7 @@ async function generateImage(params) {
     
     apiCache[cacheKey] = watermarkedUrl;
     saveCache();
-    return originalUrl;
+    return watermarkedUrl;
   } catch (error) {
     console.error('Ошибка генерации изображения:', error);
     throw new Error('Не удалось сгенерировать изображение: ' + error.message);
@@ -534,31 +547,6 @@ async function generateAudio(params) {
     throw new Error('Не удалось сгенерировать аудио: ' + error.message);
   }
 }
-
-function setupEmojiPicker() {
-  const categories = {
-    'Эмоции': ['😊', '😂', '😍', '😢', '😺'],
-    'Объекты': ['🚀', '💡', '🌟', '📚', '🎉'],
-    'Символы': ['👍', '🔥', '❤️', '✅', '⚡']
-  };
-  emojiPicker.innerHTML = Object.entries(categories).map(([name, emojis]) => `
-    <div class="emoji-category">
-      <h3>${name}</h3>
-      ${emojis.map(emoji => `<span>${emoji}</span>`).join('')}
-    </div>
-  `).join('');
-  emojiPicker.querySelectorAll('span').forEach(span => {
-    span.addEventListener('click', () => {
-      input.value += span.textContent;
-      input.focus();
-      emojiPicker.style.display = 'none';
-    });
-  });
-}
-
-emojiButton.addEventListener('click', () => {
-  emojiPicker.style.display = emojiPicker.style.display === 'flex' ? 'none' : 'flex';
-});
 
 form.onsubmit = async (e) => {
   e.preventDefault();
@@ -606,13 +594,6 @@ document.addEventListener('click', (event) => {
       }, 1500);
     });
   }
-  if (!event.target.closest('#emojiPicker') && !event.target.closest('#emojiButton')) {
-    emojiPicker.style.display = 'none';
-  }
-  if (event.target.closest('.file-preview .close-btn')) {
-    filePreview.style.display = 'none';
-    filePreview.innerHTML = '<button class="close-btn" aria-label="Закрыть превью"><i class="fas fa-times"></i></button>';
-  }
 });
 
 document.querySelector('.sidebar button[aria-label="Переключить тему"]').addEventListener('click', () => {
@@ -653,47 +634,14 @@ document.querySelector('.sidebar button[aria-label="Открыть справк�
 `, 'bot');
 });
 
-fileButton.addEventListener('click', () => {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/*,audio/*,video/*,application/pdf';
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 10 * 1024 * 1024) {
-      addMessage('Файл слишком большой (макс. 10 МБ).', 'bot');
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    const type = file.type;
+menuToggle.addEventListener('click', () => {
+  sidebar.classList.toggle('active');
+});
 
-    filePreview.innerHTML = '<button class="close-btn" aria-label="Закрыть превью"><i class="fas fa-times"></i></button>';
-    if (type.startsWith('image')) {
-      const img = document.createElement('img');
-      img.src = url;
-      filePreview.appendChild(img);
-      filePreview.style.display = 'block';
-      addMessage(`Загружено изображение: ${file.name}`, 'user', false, true);
-      addMessage('Анализирую изображение... (симуляция)', 'bot');
-    } else if (type.startsWith('video')) {
-      const video = document.createElement('video');
-      video.src = url;
-      video.controls = true;
-      filePreview.appendChild(video);
-      filePreview.style.display = 'block';
-      addMessage(`Загружено видео: ${file.name}`, 'user', false, true);
-    } else if (type === 'application/pdf') {
-      const iframe = document.createElement('iframe');
-      iframe.src = url;
-      filePreview.appendChild(iframe);
-      filePreview.style.display = 'block';
-      addMessage(`Загружен PDF: ${file.name}`, 'user', false, true);
-      addMessage('Извлекаю текст из PDF... (симуляция)', 'bot');
-    } else if (type.startsWith('audio')) {
-      addMessage(url, 'user', false, true, true);
-    }
-  };
-  input.click();
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.sidebar') && !event.target.closest('.menu-toggle') && sidebar.classList.contains('active')) {
+    sidebar.classList.remove('active');
+  }
 });
 
 if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
@@ -732,7 +680,6 @@ if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
 
 window.onload = () => {
   loadChat();
-  setupEmojiPicker();
   if (localStorage.getItem('theme') === 'light') {
     document.body.classList.add('light-theme');
   }
